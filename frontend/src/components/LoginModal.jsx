@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { X, Lock, Mail, Phone, User, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AppContext';
-import { auth } from '../firebase';
+import { auth, db } from '../firebase';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
+import { doc, setDoc } from 'firebase/firestore';
 
 export default function LoginModal({ onClose }) {
-  const { login, register, adminLogin } = useAuth();
+  const { adminLogin } = useAuth();
   const [isRegister, setIsRegister] = useState(false);
   const [isAdminMode, setIsAdminMode] = useState(false);
 
@@ -56,40 +57,41 @@ export default function LoginModal({ onClose }) {
           return;
         }
 
-        const firebaseToken = await userCredential.user.getIdToken();
-        await register({
+        // Save customer details to Firestore
+        const user = userCredential.user;
+        const docRef = doc(db, 'users', user.uid);
+        await setDoc(docRef, {
+          uid: user.uid,
           name,
           email,
           phone,
-          password,
-          address,
-          city,
-          pincode,
-          firebaseToken
+          address: address || '',
+          city: city || '',
+          pincode: pincode || '',
+          role: 'customer',
+          createdAt: new Date().toISOString()
         });
         onClose();
       } else {
         // Firebase Email/Password Sign In
-        let userCredential;
         try {
-          userCredential = await signInWithEmailAndPassword(auth, email, password);
+          await signInWithEmailAndPassword(auth, email, password);
         } catch (err) {
           console.error('Firebase login error:', err);
-          let errMsg = 'Incorrect email or password.';
-          if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-            errMsg = 'Incorrect email or password.';
-          } else if (err.code === 'auth/invalid-email') {
-            errMsg = 'The email address is invalid.';
-          } else if (err.message) {
-            errMsg = err.message;
+          let errMsg = err.message || 'Incorrect email or password.';
+          if (err.code === 'auth/invalid-credential') {
+            errMsg = 'Invalid email or password.';
+          } else if (err.code === 'auth/user-not-found') {
+            errMsg = 'No account found with this email.';
+          } else if (err.code === 'auth/wrong-password') {
+            errMsg = 'Invalid email or password.';
+          } else if (err.code === 'auth/too-many-requests') {
+            errMsg = 'Too many attempts. Please try again later.';
           }
           setError(errMsg);
           setLoading(false);
           return;
         }
-
-        const firebaseToken = await userCredential.user.getIdToken();
-        await login(email, null, null, firebaseToken);
         onClose();
       }
     } catch (err) {

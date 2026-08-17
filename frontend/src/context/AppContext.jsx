@@ -1,4 +1,17 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
+import { auth, db } from '../firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  collection, 
+  addDoc, 
+  getDocs, 
+  query, 
+  where 
+} from 'firebase/firestore';
 
 const AuthContext = createContext();
 const CartContext = createContext();
@@ -24,6 +37,82 @@ export function AppProviders({ children }) {
 
   // Helper fetch function
   const apiFetch = async (endpoint, options = {}) => {
+    // Intercept customer endpoints for Firebase/Firestore
+    if (!isAdmin && auth.currentUser) {
+      const uid = auth.currentUser.uid;
+      
+      // 1. Get Measurements
+      if (endpoint === '/auth/measurements' && (!options.method || options.method === 'GET')) {
+        const docRef = doc(db, 'users', uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          return docSnap.data().measurements || {};
+        }
+        return {};
+      }
+      
+      // 2. Put Measurements
+      if (endpoint === '/auth/measurements' && options.method === 'PUT') {
+        const docRef = doc(db, 'users', uid);
+        const body = JSON.parse(options.body);
+        await updateDoc(docRef, { measurements: body });
+        return { success: true };
+      }
+      
+      // 3. Post Checkout / Order Placement
+      if (endpoint === '/checkout' && options.method === 'POST') {
+        const body = JSON.parse(options.body);
+        const order_number = 'MTS-' + Math.floor(100000 + Math.random() * 900000);
+        const created_at = new Date().toISOString();
+        const delivery_date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString();
+        const newOrder = {
+          ...body,
+          order_number,
+          created_at,
+          delivery_date,
+          status: 'pending',
+          userId: uid
+        };
+        await addDoc(collection(db, 'orders'), newOrder);
+        return newOrder;
+      }
+      
+      // 4. Post Booking (standard, measurement, makeup)
+      if ((endpoint === '/bookings' || endpoint === '/measurement-bookings' || endpoint === '/makeup-bookings') && options.method === 'POST') {
+        const body = JSON.parse(options.body);
+        const newBooking = {
+          ...body,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          userId: uid
+        };
+        let collName = 'bookings';
+        if (endpoint === '/measurement-bookings') collName = 'measurement_bookings';
+        if (endpoint === '/makeup-bookings') collName = 'makeup_bookings';
+        
+        await addDoc(collection(db, collName), newBooking);
+        return newBooking;
+      }
+      
+      // 5. Get History List (orders, bookings, measurement-bookings, makeup-bookings)
+      let collName = '';
+      if (endpoint === '/orders') collName = 'orders';
+      else if (endpoint === '/bookings') collName = 'bookings';
+      else if (endpoint === '/measurement-bookings') collName = 'measurement_bookings';
+      else if (endpoint === '/makeup-bookings') collName = 'makeup_bookings';
+      
+      if (collName) {
+        const q = query(collection(db, collName), where('userId', '==', uid));
+        const querySnapshot = await getDocs(q);
+        const list = [];
+        querySnapshot.forEach((doc) => {
+          list.push({ id: doc.id, ...doc.data() });
+        });
+        list.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        return list;
+      }
+    }
+
     const headers = {
       'Content-Type': 'application/json',
       ...options.headers
@@ -41,7 +130,7 @@ export function AppProviders({ children }) {
     } catch (netErr) {
       console.error('Network Error during apiFetch:', netErr);
       throw new Error(
-        `Unable to connect to the backend server. If this is the production site, the Render backend might be waking up from sleep (which can take 50-60 seconds on the free tier). Please try again in a moment. (Error: ${netErr.message})`
+        `Unable to connect to the server. Please check your internet connection and try again.`
       );
     }
 
@@ -64,39 +153,72 @@ export function AppProviders({ children }) {
     return res.json();
   };
 
-  // Load profile on start
+  // Listen to Firebase Auth state change for customers
   useEffect(() => {
-    async function loadUser() {
-      if (!token) {
-        setAuthLoading(false);
-        return;
-      }
-      try {
-        const decoded = JSON.parse(atob(token.split('.')[1]));
-        const isAdm = decoded.role === 'admin' || decoded.role === 'manager';
-        setIsAdmin(isAdm);
-        
-        if (isAdm) {
-          // Admins don't need a profile detail endpoint normally, but we can set user info from token
-          setUser({
-            id: decoded.id,
-            name: decoded.name,
-            email: decoded.email,
-            role: decoded.role
-          });
-        } else {
-          const profile = await apiFetch('/auth/profile');
-          setUser(profile);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const docRef = doc(db, 'users', firebaseUser.uid);
+          const docSnap = await getDoc(docRef);
+          let profileData = null;
+          if (docSnap.exists()) {
+            profileData = docSnap.data();
+          } else {
+            profileData = {
+              uid: firebaseUser.uid,
+              name: firebaseUser.displayName || firebaseUser.email.split('@')[0],
+              email: firebaseUser.email,
+              phone: firebaseUser.phoneNumber || '',
+              role: 'customer',
+              createdAt: new Date().toISOString()
+            };
+            await setDoc(docRef, profileData);
+          }
+          setUser(profileData);
+          setIsAdmin(false);
+          const idToken = await firebaseUser.getIdToken();
+          setToken(idToken);
+          localStorage.setItem('token', idToken);
+        } catch (err) {
+          console.error('Error fetching Firestore user profile:', err);
+        } finally {
+          setAuthLoading(false);
         }
-      } catch (err) {
-        console.error('Failed to load profile, logging out:', err.message);
-        logout();
-      } finally {
+      } else {
+        // Fallback for admin JWT persistent session
+        const localToken = localStorage.getItem('token');
+        if (localToken) {
+          try {
+            const parts = localToken.split('.');
+            if (parts.length === 3) {
+              const decoded = JSON.parse(atob(parts[1]));
+              const isAdm = decoded.role === 'admin' || decoded.role === 'manager';
+              if (isAdm) {
+                setIsAdmin(true);
+                setUser({
+                  id: decoded.id,
+                  name: decoded.name,
+                  email: decoded.email,
+                  role: decoded.role
+                });
+                setToken(localToken);
+                setAuthLoading(false);
+                return;
+              }
+            }
+          } catch (err) {
+            console.error('Failed to load local admin profile, logging out:', err.message);
+          }
+        }
+        setUser(null);
+        setIsAdmin(false);
+        setToken('');
         setAuthLoading(false);
       }
-    }
-    loadUser();
-  }, [token]);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const login = async (emailOrPhone, password, otp = null, firebaseToken = null) => {
     const data = await apiFetch('/auth/login', {
@@ -134,7 +256,14 @@ export function AppProviders({ children }) {
     return data;
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (auth.currentUser) {
+      try {
+        await signOut(auth);
+      } catch (err) {
+        console.error('Firebase signOut error:', err);
+      }
+    }
     setToken('');
     localStorage.removeItem('token');
     setUser(null);
@@ -142,11 +271,17 @@ export function AppProviders({ children }) {
   };
 
   const updateProfile = async (profileData) => {
-    await apiFetch('/auth/profile', {
-      method: 'PUT',
-      body: JSON.stringify(profileData)
-    });
-    setUser(prev => ({ ...prev, ...profileData }));
+    if (!isAdmin && auth.currentUser) {
+      const docRef = doc(db, 'users', auth.currentUser.uid);
+      await updateDoc(docRef, profileData);
+      setUser(prev => ({ ...prev, ...profileData }));
+    } else {
+      await apiFetch('/auth/profile', {
+        method: 'PUT',
+        body: JSON.stringify(profileData)
+      });
+      setUser(prev => ({ ...prev, ...profileData }));
+    }
   };
 
   // --- Cart State & Operations ---

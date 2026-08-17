@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, Star, Filter, ShoppingCart, Calendar } from 'lucide-react';
 import { useCart } from '../context/AppContext';
+import { services as mockServices, products as mockProducts } from '../data/mockCatalog';
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -56,7 +57,9 @@ export default function Catalog() {
         setServices(servicesRes);
         setProducts(productsRes);
       } catch (err) {
-        setError('Failed to fetch catalog. Please ensure the backend server is running.');
+        console.warn('Backend fetch failed, falling back to mock catalog:', err);
+        setServices(mockServices);
+        setProducts(mockProducts);
       } finally {
         setLoading(false);
       }

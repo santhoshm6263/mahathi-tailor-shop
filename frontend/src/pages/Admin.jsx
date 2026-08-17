@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, ShoppingCart, Calendar, Scissors, Box, TrendingUp, Users, DollarSign, Check, X, Edit, Trash, Plus } from 'lucide-react';
 import { useAuth } from '../context/AppContext';
+import { services as mockServices, products as mockProducts, designers as mockDesigners } from '../data/mockCatalog';
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -74,14 +75,27 @@ export default function Admin() {
         setMeasBookings(measData);
         setMakeupBookings(makeupData);
       } else if (activeTab === 'services') {
-        const [servicesData, designersData] = await Promise.all([
-          fetch(`${API_BASE}/api/services`).then(r => r.json()),
-          fetch(`${API_BASE}/api/designers`).then(r => r.json())
-        ]);
+        let servicesData, designersData;
+        try {
+          [servicesData, designersData] = await Promise.all([
+            fetch(`${API_BASE}/api/services`).then(r => r.json()),
+            fetch(`${API_BASE}/api/designers`).then(r => r.json())
+          ]);
+        } catch (fetchErr) {
+          console.warn('Backend fetch failed, falling back to mock services and designers:', fetchErr);
+          servicesData = mockServices;
+          designersData = mockDesigners;
+        }
         setServices(servicesData);
         setDesigners(designersData);
       } else if (activeTab === 'products') {
-        const productsData = await fetch(`${API_BASE}/api/products`).then(r => r.json());
+        let productsData;
+        try {
+          productsData = await fetch(`${API_BASE}/api/products`).then(r => r.json());
+        } catch (fetchErr) {
+          console.warn('Backend fetch failed, falling back to mock products:', fetchErr);
+          productsData = mockProducts;
+        }
         setProducts(productsData);
       }
     } catch (err) {

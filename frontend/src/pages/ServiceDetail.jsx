@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Star, Calendar, Clock, MapPin, Sparkles, Ruler, ArrowLeft, Heart, Shield, Check } from 'lucide-react';
 import { useAuth, useCart } from '../context/AppContext';
 import LoginModal from '../components/LoginModal';
+import { services as mockServices } from '../data/mockCatalog';
 
 const getApiBase = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -52,7 +53,13 @@ export default function ServiceDetail() {
           setService(data);
         }
       } catch (err) {
-        setError('Failed to load service details. Make sure the API server is active.');
+        console.warn('Backend fetch failed, falling back to mock services:', err);
+        const matched = mockServices.find(s => s.id === parseInt(id));
+        if (matched) {
+          setService(matched);
+        } else {
+          setError('Service profile not found.');
+        }
       } finally {
         setLoading(false);
       }
