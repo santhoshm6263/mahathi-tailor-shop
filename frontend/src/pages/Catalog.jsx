@@ -3,7 +3,15 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Search, Star, Filter, ShoppingCart, Calendar } from 'lucide-react';
 import { useCart } from '../context/AppContext';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  const isLocal = typeof window !== 'undefined' && 
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  return isLocal ? 'http://localhost:5000' : 'https://mahathi-tailor-shop.onrender.com';
+};
+const API_BASE = getApiBase();
 
 export default function Catalog() {
   const { addToCart } = useCart();

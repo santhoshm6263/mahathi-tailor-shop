@@ -3,7 +3,16 @@ import React, { createContext, useState, useEffect, useContext } from 'react';
 const AuthContext = createContext();
 const CartContext = createContext();
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  const isLocal = typeof window !== 'undefined' && 
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  return isLocal ? 'http://localhost:5000' : 'https://mahathi-tailor-shop.onrender.com';
+};
+
+const API_BASE = getApiBase();
 const API_URL = `${API_BASE}/api`;
 
 export function AppProviders({ children }) {
@@ -22,14 +31,36 @@ export function AppProviders({ children }) {
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
-    const res = await fetch(`${API_URL}${endpoint}`, {
-      ...options,
-      headers
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Something went wrong');
+
+    let res;
+    try {
+      res = await fetch(`${API_URL}${endpoint}`, {
+        ...options,
+        headers
+      });
+    } catch (netErr) {
+      console.error('Network Error during apiFetch:', netErr);
+      throw new Error(
+        `Unable to connect to the backend server. If this is the production site, the Render backend might be waking up from sleep (which can take 50-60 seconds on the free tier). Please try again in a moment. (Error: ${netErr.message})`
+      );
     }
+
+    if (!res.ok) {
+      let errMsg = 'Something went wrong';
+      try {
+        const errJson = await res.json();
+        errMsg = errJson.message || errMsg;
+      } catch (parseErr) {
+        try {
+          const errText = await res.text();
+          errMsg = errText || `HTTP error ${res.status}: ${res.statusText}`;
+        } catch (textErr) {
+          errMsg = `HTTP error ${res.status}: ${res.statusText}`;
+        }
+      }
+      throw new Error(errMsg);
+    }
+
     return res.json();
   };
 

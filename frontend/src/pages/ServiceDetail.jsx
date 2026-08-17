@@ -4,7 +4,15 @@ import { Star, Calendar, Clock, MapPin, Sparkles, Ruler, ArrowLeft, Heart, Shiel
 import { useAuth, useCart } from '../context/AppContext';
 import LoginModal from '../components/LoginModal';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  const isLocal = typeof window !== 'undefined' && 
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  return isLocal ? 'http://localhost:5000' : 'https://mahathi-tailor-shop.onrender.com';
+};
+const API_BASE = getApiBase();
 
 export default function ServiceDetail() {
   const { id } = useParams();
