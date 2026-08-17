@@ -3,6 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Search, Star, Filter, ShoppingCart, Calendar } from 'lucide-react';
 import { useCart } from '../context/AppContext';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 export default function Catalog() {
   const { addToCart } = useCart();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -40,8 +42,8 @@ export default function Catalog() {
       setError('');
       try {
         const [servicesRes, productsRes] = await Promise.all([
-          fetch('http://localhost:5000/api/services').then(r => r.json()),
-          fetch('http://localhost:5000/api/products').then(r => r.json())
+          fetch(`${API_BASE}/api/services`).then(r => r.json()),
+          fetch(`${API_BASE}/api/products`).then(r => r.json())
         ]);
         setServices(servicesRes);
         setProducts(productsRes);

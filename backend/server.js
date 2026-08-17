@@ -2,12 +2,31 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const { initDatabase, db, dbRun, dbAll, dbGet } = require('./database');
-const { generateToken, authenticateToken, requireAdmin, sendMockOTP, verifyOTP } = require('./auth');
+const { generateToken, authenticateToken, requireAdmin, sendMockOTP, verifyOTP, verifyFirebaseIdToken } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+const allowedOrigins = [
+  'https://mahathi-tailor-shop.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    
+    const isLocalhost = origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:');
+    if (allowedOrigins.includes(origin) || isLocalhost) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 // Initialize database schema and data
@@ -23,26 +42,43 @@ app.post('/api/auth/send-otp', (req, res) => {
   if (!phoneOrEmail) {
     return res.status(400).json({ message: 'Phone or email is required' });
   }
-  const code = sendMockOTP(phoneOrEmail);
-  // In development, we return the OTP code to make it easier for testing
-  res.json({ message: 'OTP sent successfully', otp: code });
+  sendMockOTP(phoneOrEmail);
+  res.json({ message: 'OTP sent successfully' });
 });
+
+function normalizePhone(num) {
+  if (!num) return '';
+  let cleaned = num.replace(/[\s\-\(\)]/g, '');
+  if (cleaned.length === 10 && /^\d+$/.test(cleaned)) {
+    return `+91${cleaned}`;
+  }
+  if (cleaned.length === 12 && cleaned.startsWith('91')) {
+    return `+${cleaned}`;
+  }
+  return cleaned;
+}
 
 // User Registration
 app.post('/api/auth/register', async (req, res) => {
-  const { name, email, phone, password, address, city, pincode, otp } = req.body;
+  const { name, email, phone, password, address, city, pincode, firebaseToken } = req.body;
   
-  if (!name || !email || !phone || !password || !otp) {
-    return res.status(400).json({ message: 'Please provide all required fields' });
-  }
-
-  // Verify OTP (check either email or phone)
-  const isOtpValid = verifyOTP(phone, otp) || verifyOTP(email, otp);
-  if (!isOtpValid) {
-    return res.status(400).json({ message: 'Invalid or expired OTP code' });
+  if (!name || !email || !phone || !password || !firebaseToken) {
+    return res.status(400).json({ message: 'Please provide all required fields including Firebase token' });
   }
 
   try {
+    const decodedToken = await verifyFirebaseIdToken(firebaseToken);
+    if (!decodedToken || !decodedToken.phone_number) {
+      return res.status(400).json({ message: 'Invalid Firebase authentication token' });
+    }
+
+    const verifiedPhone = normalizePhone(decodedToken.phone_number);
+    const inputPhone = normalizePhone(phone);
+
+    if (verifiedPhone !== inputPhone) {
+      return res.status(400).json({ message: 'Submitted phone number does not match verified Firebase phone number' });
+    }
+
     const password_hash = bcrypt.hashSync(password, 10);
     const profile_pic = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(/\s+/g, '')}`;
 
@@ -51,7 +87,7 @@ app.post('/api/auth/register', async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
     
-    db.run(query, [name, email, phone, password_hash, address || '', city || '', pincode || '', profile_pic], function (err) {
+    db.run(query, [name, email, inputPhone, password_hash, address || '', city || '', pincode || '', profile_pic], function (err) {
       if (err) {
         if (err.message.includes('UNIQUE constraint failed')) {
           return res.status(400).json({ message: 'Email or phone number already registered' });
@@ -60,7 +96,7 @@ app.post('/api/auth/register', async (req, res) => {
       }
       
       const userId = this.lastID;
-      const user = { id: userId, name, email, phone };
+      const user = { id: userId, name, email, phone: inputPhone };
       const token = generateToken(user);
       
       // Initialize empty measurements profile
@@ -69,7 +105,7 @@ app.post('/api/auth/register', async (req, res) => {
       res.status(201).json({
         message: 'Registration successful',
         token,
-        user: { id: userId, name, email, phone, profile_pic }
+        user: { id: userId, name, email, phone: inputPhone, profile_pic }
       });
     });
   } catch (error) {
@@ -77,32 +113,49 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// User Login (supports password login or OTP login)
+// User Login (supports password login or Firebase OTP token login)
 app.post('/api/auth/login', async (req, res) => {
-  const { emailOrPhone, password, otp } = req.body;
-
-  if (!emailOrPhone) {
-    return res.status(400).json({ message: 'Email or phone is required' });
-  }
+  const { emailOrPhone, password, otp, firebaseToken } = req.body;
 
   try {
-    const user = await dbGet('SELECT * FROM users WHERE email = ? OR phone = ?', [emailOrPhone, emailOrPhone]);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
+    let user;
 
-    if (otp) {
-      const isOtpValid = verifyOTP(emailOrPhone, otp);
-      if (!isOtpValid) {
-        return res.status(400).json({ message: 'Invalid or expired OTP code' });
+    if (firebaseToken) {
+      const decodedToken = await verifyFirebaseIdToken(firebaseToken);
+      if (!decodedToken || !decodedToken.phone_number) {
+        return res.status(400).json({ message: 'Invalid Firebase authentication token' });
       }
-    } else if (password) {
-      const isPasswordValid = bcrypt.compareSync(password, user.password_hash);
-      if (!isPasswordValid) {
-        return res.status(400).json({ message: 'Invalid credentials' });
+
+      const verifiedPhone = normalizePhone(decodedToken.phone_number);
+      user = await dbGet('SELECT * FROM users WHERE phone = ?', [verifiedPhone]);
+      if (!user) {
+        return res.status(404).json({ message: 'No registered user found with this verified phone number. Please register first.' });
       }
     } else {
-      return res.status(400).json({ message: 'Password or OTP is required to login' });
+      if (!emailOrPhone) {
+        return res.status(400).json({ message: 'Email or phone is required' });
+      }
+
+      const normalizedInput = normalizePhone(emailOrPhone);
+      user = await dbGet('SELECT * FROM users WHERE email = ? OR phone = ? OR phone = ?', [emailOrPhone, emailOrPhone, normalizedInput]);
+      
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      if (password) {
+        const isPasswordValid = bcrypt.compareSync(password, user.password_hash);
+        if (!isPasswordValid) {
+          return res.status(400).json({ message: 'Invalid credentials' });
+        }
+      } else if (otp) {
+        const isOtpValid = verifyOTP(emailOrPhone, otp);
+        if (!isOtpValid) {
+          return res.status(400).json({ message: 'Invalid or expired OTP code' });
+        }
+      } else {
+        return res.status(400).json({ message: 'Password or OTP is required to login' });
+      }
     }
 
     const token = generateToken(user);

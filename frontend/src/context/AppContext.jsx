@@ -3,7 +3,8 @@ import React, { createContext, useState, useEffect, useContext } from 'react';
 const AuthContext = createContext();
 const CartContext = createContext();
 
-const API_URL = 'http://localhost:5000/api';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = `${API_BASE}/api`;
 
 export function AppProviders({ children }) {
   // --- Auth State & Operations ---
@@ -66,10 +67,10 @@ export function AppProviders({ children }) {
     loadUser();
   }, [token]);
 
-  const login = async (emailOrPhone, password, otp = null) => {
+  const login = async (emailOrPhone, password, otp = null, firebaseToken = null) => {
     const data = await apiFetch('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ emailOrPhone, password, otp })
+      body: JSON.stringify({ emailOrPhone, password, otp, firebaseToken })
     });
     setToken(data.token);
     localStorage.setItem('token', data.token);

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { X, Lock, Mail, Phone, User, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AppContext';
+import { auth } from '../firebase';
+import { RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
 
 export default function LoginModal({ onClose }) {
   const { login, register, adminLogin, apiFetch } = useAuth();
@@ -22,32 +24,92 @@ export default function LoginModal({ onClose }) {
 
   // UI Flags & Messages
   const [otpSent, setOtpSent] = useState(false);
-  const [sentCode, setSentCode] = useState(''); // Display mock OTP for local testing
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Firebase Auth states
+  const [confirmationResult, setConfirmationResult] = useState(null);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [lastPhoneSent, setLastPhoneSent] = useState('');
+
+  const normalizePhone = (num) => {
+    let cleaned = num.trim().replace(/[\s\-\(\)]/g, '');
+    if (cleaned.length === 10 && /^\d+$/.test(cleaned)) {
+      return `+91${cleaned}`;
+    }
+    if (cleaned.length === 12 && cleaned.startsWith('91')) {
+      return `+${cleaned}`;
+    }
+    return cleaned;
+  };
+
+  React.useEffect(() => {
+    let timer;
+    if (resendCooldown > 0) {
+      timer = setTimeout(() => setResendCooldown(resendCooldown - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [resendCooldown]);
+
   const handleSendOTP = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     setError('');
     setLoading(true);
-    const identifier = isRegister ? phone || email : phone || email; // use whichever is filled
-    
-    if (!identifier) {
-      setError('Please enter a phone number or email first.');
+
+    const inputPhone = isRegister ? phone : (phone || email);
+    if (!inputPhone) {
+      setError('Please enter a phone number first.');
+      setLoading(false);
+      return;
+    }
+
+    const formattedPhone = normalizePhone(inputPhone);
+    if (!formattedPhone.startsWith('+') || formattedPhone.length < 10 || !/^\+\d+$/.test(formattedPhone)) {
+      setError('Please enter a valid phone number (e.g. 9876543210 or with country code).');
       setLoading(false);
       return;
     }
 
     try {
-      const data = await apiFetch('/auth/send-otp', {
-        method: 'POST',
-        body: JSON.stringify({ phoneOrEmail: identifier })
+      if (window.recaptchaVerifier) {
+        try {
+          window.recaptchaVerifier.clear();
+        } catch (err) {
+          console.error('Error clearing recaptchaVerifier:', err);
+        }
+      }
+
+      window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+        size: 'invisible',
+        callback: (response) => {
+          // reCAPTCHA solved
+        },
+        'expired-callback': () => {
+          setError('reCAPTCHA expired. Please try again.');
+        }
       });
+
+      const confirmation = await signInWithPhoneNumber(auth, formattedPhone, window.recaptchaVerifier);
+      setConfirmationResult(confirmation);
       setOtpSent(true);
-      setSentCode(data.otp);
+      setLastPhoneSent(formattedPhone);
+      setResendCooldown(60);
     } catch (err) {
-      setError(err.message || 'Failed to send OTP. Please try again.');
+      console.error('Error sending OTP:', err);
+      let errMsg = 'Failed to send OTP. Please try again.';
+      if (err.code === 'auth/invalid-phone-number') {
+        errMsg = 'The phone number entered is invalid. Please check the format.';
+      } else if (err.code === 'auth/too-many-requests') {
+        errMsg = 'Too many requests. Please try again after some time.';
+      } else if (err.code === 'auth/captcha-check-failed') {
+        errMsg = 'reCAPTCHA verification failed. Please try again.';
+      } else if (err.code === 'auth/sms-quota-exceeded') {
+        errMsg = 'SMS quota exceeded. Please contact support or try later.';
+      } else if (err.message) {
+        errMsg = err.message;
+      }
+      setError(errMsg);
     } finally {
       setLoading(false);
     }
@@ -64,19 +126,36 @@ export default function LoginModal({ onClose }) {
         onClose();
       } else if (isRegister) {
         if (!otp) {
-          setError('Please enter the OTP sent to your phone/email.');
+          setError('Please enter the OTP sent to your phone.');
           setLoading(false);
           return;
         }
+        if (!confirmationResult) {
+          setError('Please request an OTP first.');
+          setLoading(false);
+          return;
+        }
+
+        let userCredential;
+        try {
+          userCredential = await confirmationResult.confirm(otp);
+        } catch (err) {
+          console.error('OTP confirmation error:', err);
+          setError('Invalid or expired OTP code. Please try again.');
+          setLoading(false);
+          return;
+        }
+
+        const firebaseToken = await userCredential.user.getIdToken();
         await register({
           name,
           email,
-          phone,
+          phone: lastPhoneSent,
           password,
           address,
           city,
           pincode,
-          otp
+          firebaseToken
         });
         onClose();
       } else {
@@ -87,7 +166,24 @@ export default function LoginModal({ onClose }) {
             setLoading(false);
             return;
           }
-          await login(email || phone, null, otp);
+          if (!confirmationResult) {
+            setError('Please request an OTP first.');
+            setLoading(false);
+            return;
+          }
+
+          let userCredential;
+          try {
+            userCredential = await confirmationResult.confirm(otp);
+          } catch (err) {
+            console.error('OTP confirmation error:', err);
+            setError('Invalid or expired OTP code. Please try again.');
+            setLoading(false);
+            return;
+          }
+
+          const firebaseToken = await userCredential.user.getIdToken();
+          await login(lastPhoneSent, null, null, firebaseToken);
         } else {
           await login(email || phone, password);
         }
@@ -105,7 +201,8 @@ export default function LoginModal({ onClose }) {
     setIsAdminMode(false);
     setUseOtpMode(false);
     setOtpSent(false);
-    setSentCode('');
+    setConfirmationResult(null);
+    setLastPhoneSent('');
     setError('');
   };
 
@@ -114,7 +211,8 @@ export default function LoginModal({ onClose }) {
     setIsRegister(false);
     setUseOtpMode(false);
     setOtpSent(false);
-    setSentCode('');
+    setConfirmationResult(null);
+    setLastPhoneSent('');
     setError('');
   };
 
@@ -192,13 +290,25 @@ export default function LoginModal({ onClose }) {
           {/* Sign In Fields */}
           {!isRegister && (
             <div className="form-group">
-              <label className="form-label">{isAdminMode ? 'Admin Email Address' : 'Email Address or Phone Number'}</label>
+              <label className="form-label">
+                {isAdminMode 
+                  ? 'Admin Email Address' 
+                  : useOtpMode 
+                    ? 'Phone Number' 
+                    : 'Email Address or Phone Number'}
+              </label>
               <div className="input-with-icon">
                 {isAdminMode ? <Mail className="input-icon" size={16} /> : <Phone className="input-icon" size={16} />}
                 <input
                   type={isAdminMode ? 'email' : 'text'}
                   required
-                  placeholder={isAdminMode ? 'admin@mahathitailors.com' : 'Enter your email or phone'}
+                  placeholder={
+                    isAdminMode 
+                      ? 'admin@mahathitailors.com' 
+                      : useOtpMode 
+                        ? 'Enter your phone (e.g. 9876543210)' 
+                        : 'Enter your email or phone'
+                  }
                   value={email || phone}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -245,6 +355,9 @@ export default function LoginModal({ onClose }) {
               {otpSent ? (
                 <div className="form-group">
                   <label className="form-label text-gradient">Verification OTP Code</label>
+                  <div className="otp-sent-status text-center text-sm margin-bottom-xs">
+                    <span>OTP sent to <strong>{lastPhoneSent}</strong></span>
+                  </div>
                   <input
                     type="text"
                     required
@@ -252,12 +365,19 @@ export default function LoginModal({ onClose }) {
                     value={otp}
                     onChange={(e) => setOtp(e.target.value)}
                     className="form-input text-center otp-input"
+                    maxLength={6}
                   />
-                  {sentCode && (
-                    <div className="mock-otp-notification text-center">
-                      <span>Testing Code: <strong>{sentCode}</strong> (Auto-generated)</span>
-                    </div>
-                  )}
+                  
+                  <div className="otp-actions flex justify-between margin-top-xs">
+                    <button
+                      type="button"
+                      className="auth-toggle-link text-xs"
+                      onClick={handleSendOTP}
+                      disabled={loading || resendCooldown > 0}
+                    >
+                      {resendCooldown > 0 ? `Resend OTP in ${resendCooldown}s` : 'Resend OTP'}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <button
@@ -303,6 +423,9 @@ export default function LoginModal({ onClose }) {
               </div>
             </div>
           )}
+
+          {/* Invisible reCAPTCHA container */}
+          <div id="recaptcha-container" className="margin-bottom-xs"></div>
 
           <button
             type="submit"

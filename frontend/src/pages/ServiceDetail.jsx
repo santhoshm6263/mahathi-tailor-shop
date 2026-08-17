@@ -4,6 +4,8 @@ import { Star, Calendar, Clock, MapPin, Sparkles, Ruler, ArrowLeft, Heart, Shiel
 import { useAuth, useCart } from '../context/AppContext';
 import LoginModal from '../components/LoginModal';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 export default function ServiceDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -35,7 +37,7 @@ export default function ServiceDetail() {
       setLoading(true);
       setError('');
       try {
-        const data = await fetch(`http://localhost:5000/api/services/${id}`).then(r => r.json());
+        const data = await fetch(`${API_BASE}/api/services/${id}`).then(r => r.json());
         if (data.message && data.message.includes('not found')) {
           setError('Service profile not found.');
         } else {

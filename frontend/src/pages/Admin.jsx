@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, ShoppingCart, Calendar, Scissors, Box, TrendingUp, Users, DollarSign, Check, X, Edit, Trash, Plus } from 'lucide-react';
 import { useAuth } from '../context/AppContext';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 export default function Admin() {
   const { user, apiFetch } = useAuth();
   
@@ -65,13 +67,13 @@ export default function Admin() {
         setMakeupBookings(makeupData);
       } else if (activeTab === 'services') {
         const [servicesData, designersData] = await Promise.all([
-          fetch('http://localhost:5000/api/services').then(r => r.json()),
-          fetch('http://localhost:5000/api/designers').then(r => r.json())
+          fetch(`${API_BASE}/api/services`).then(r => r.json()),
+          fetch(`${API_BASE}/api/designers`).then(r => r.json())
         ]);
         setServices(servicesData);
         setDesigners(designersData);
       } else if (activeTab === 'products') {
-        const productsData = await fetch('http://localhost:5000/api/products').then(r => r.json());
+        const productsData = await fetch(`${API_BASE}/api/products`).then(r => r.json());
         setProducts(productsData);
       }
     } catch (err) {
