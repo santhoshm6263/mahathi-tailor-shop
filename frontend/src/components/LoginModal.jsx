@@ -2,20 +2,18 @@ import React, { useState } from 'react';
 import { X, Lock, Mail, Phone, User, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AppContext';
 import { auth } from '../firebase';
-import { RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 
 export default function LoginModal({ onClose }) {
-  const { login, register, adminLogin, apiFetch } = useAuth();
+  const { login, register, adminLogin } = useAuth();
   const [isRegister, setIsRegister] = useState(false);
   const [isAdminMode, setIsAdminMode] = useState(false);
-  const [useOtpMode, setUseOtpMode] = useState(false);
 
   // Form Fields
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
-  const [otp, setOtp] = useState('');
   
   // Address details for signup
   const [address, setAddress] = useState('');
@@ -23,119 +21,9 @@ export default function LoginModal({ onClose }) {
   const [pincode, setPincode] = useState('');
 
   // UI Flags & Messages
-  const [otpSent, setOtpSent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-
-  // Firebase Auth states
-  const [confirmationResult, setConfirmationResult] = useState(null);
-  const [resendCooldown, setResendCooldown] = useState(0);
-  const [lastPhoneSent, setLastPhoneSent] = useState('');
-
-  const recaptchaVerifierRef = React.useRef(null);
-
-  const normalizePhone = (num) => {
-    let cleaned = num.trim().replace(/[\s\-\(\)]/g, '');
-    if (cleaned.length === 10 && /^\d+$/.test(cleaned)) {
-      return `+91${cleaned}`;
-    }
-    if (cleaned.length === 12 && cleaned.startsWith('91')) {
-      return `+${cleaned}`;
-    }
-    return cleaned;
-  };
-
-  React.useEffect(() => {
-    let timer;
-    if (resendCooldown > 0) {
-      timer = setTimeout(() => setResendCooldown(resendCooldown - 1), 1000);
-    }
-    return () => clearTimeout(timer);
-  }, [resendCooldown]);
-
-  React.useEffect(() => {
-    return () => {
-      if (recaptchaVerifierRef.current) {
-        try {
-          recaptchaVerifierRef.current.clear();
-        } catch (err) {
-          console.error('Error clearing recaptchaVerifier on unmount:', err);
-        }
-        recaptchaVerifierRef.current = null;
-      }
-    };
-  }, []);
-
-  const handleSendOTP = async (e) => {
-    if (e) e.preventDefault();
-    setError('');
-    setLoading(true);
-
-    const inputPhone = isRegister ? phone : (phone || email);
-    if (!inputPhone) {
-      setError('Please enter a phone number first.');
-      setLoading(false);
-      return;
-    }
-
-    const formattedPhone = normalizePhone(inputPhone);
-    if (!formattedPhone.startsWith('+') || formattedPhone.length < 10 || !/^\+\d+$/.test(formattedPhone)) {
-      setError('Please enter a valid phone number (e.g. 9876543210 or with country code).');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      // Clear any previous HTML content inside container to prevent reCAPTCHA rendering conflict
-      const container = document.getElementById('recaptcha-container');
-      if (container) {
-        container.innerHTML = '';
-      }
-
-      if (recaptchaVerifierRef.current) {
-        try {
-          recaptchaVerifierRef.current.clear();
-        } catch (err) {
-          console.error('Error clearing previous recaptchaVerifier:', err);
-        }
-        recaptchaVerifierRef.current = null;
-      }
-
-      recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'recaptcha-container', {
-        size: 'invisible',
-        callback: (response) => {
-          // reCAPTCHA solved
-        },
-        'expired-callback': () => {
-          setError('reCAPTCHA expired. Please try again.');
-        }
-      });
-
-      const confirmation = await signInWithPhoneNumber(auth, formattedPhone, recaptchaVerifierRef.current);
-      setConfirmationResult(confirmation);
-      setOtpSent(true);
-      setLastPhoneSent(formattedPhone);
-      setResendCooldown(60);
-    } catch (err) {
-      console.error('Error sending OTP:', err);
-      let errMsg = 'Failed to send OTP. Please try again.';
-      if (err.code === 'auth/invalid-phone-number') {
-        errMsg = 'The phone number entered is invalid. Please check the format.';
-      } else if (err.code === 'auth/too-many-requests') {
-        errMsg = 'Too many requests. Please try again after some time.';
-      } else if (err.code === 'auth/captcha-check-failed') {
-        errMsg = 'reCAPTCHA verification failed. Please try again.';
-      } else if (err.code === 'auth/sms-quota-exceeded') {
-        errMsg = 'SMS quota exceeded. Please contact support or try later.';
-      } else if (err.message) {
-        errMsg = err.message;
-      }
-      setError(errMsg);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -147,23 +35,23 @@ export default function LoginModal({ onClose }) {
         await adminLogin(email, password);
         onClose();
       } else if (isRegister) {
-        if (!otp) {
-          setError('Please enter the OTP sent to your phone.');
-          setLoading(false);
-          return;
-        }
-        if (!confirmationResult) {
-          setError('Please request an OTP first.');
-          setLoading(false);
-          return;
-        }
-
+        // Firebase Email/Password Sign Up
         let userCredential;
         try {
-          userCredential = await confirmationResult.confirm(otp);
+          userCredential = await createUserWithEmailAndPassword(auth, email, password);
         } catch (err) {
-          console.error('OTP confirmation error:', err);
-          setError('Invalid or expired OTP code. Please try again.');
+          console.error('Firebase signup error:', err);
+          let errMsg = 'Failed to create account. Please try again.';
+          if (err.code === 'auth/email-already-in-use') {
+            errMsg = 'This email address is already in use.';
+          } else if (err.code === 'auth/invalid-email') {
+            errMsg = 'The email address is invalid.';
+          } else if (err.code === 'auth/weak-password') {
+            errMsg = 'The password must be at least 6 characters long.';
+          } else if (err.message) {
+            errMsg = err.message;
+          }
+          setError(errMsg);
           setLoading(false);
           return;
         }
@@ -172,7 +60,7 @@ export default function LoginModal({ onClose }) {
         await register({
           name,
           email,
-          phone: lastPhoneSent,
+          phone,
           password,
           address,
           city,
@@ -181,34 +69,27 @@ export default function LoginModal({ onClose }) {
         });
         onClose();
       } else {
-        // Sign In
-        if (useOtpMode) {
-          if (!otp) {
-            setError('Please enter the OTP code.');
-            setLoading(false);
-            return;
+        // Firebase Email/Password Sign In
+        let userCredential;
+        try {
+          userCredential = await signInWithEmailAndPassword(auth, email, password);
+        } catch (err) {
+          console.error('Firebase login error:', err);
+          let errMsg = 'Incorrect email or password.';
+          if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+            errMsg = 'Incorrect email or password.';
+          } else if (err.code === 'auth/invalid-email') {
+            errMsg = 'The email address is invalid.';
+          } else if (err.message) {
+            errMsg = err.message;
           }
-          if (!confirmationResult) {
-            setError('Please request an OTP first.');
-            setLoading(false);
-            return;
-          }
-
-          let userCredential;
-          try {
-            userCredential = await confirmationResult.confirm(otp);
-          } catch (err) {
-            console.error('OTP confirmation error:', err);
-            setError('Invalid or expired OTP code. Please try again.');
-            setLoading(false);
-            return;
-          }
-
-          const firebaseToken = await userCredential.user.getIdToken();
-          await login(lastPhoneSent, null, null, firebaseToken);
-        } else {
-          await login(email || phone, password);
+          setError(errMsg);
+          setLoading(false);
+          return;
         }
+
+        const firebaseToken = await userCredential.user.getIdToken();
+        await login(email, null, null, firebaseToken);
         onClose();
       }
     } catch (err) {
@@ -221,20 +102,12 @@ export default function LoginModal({ onClose }) {
   const toggleMode = () => {
     setIsRegister(!isRegister);
     setIsAdminMode(false);
-    setUseOtpMode(false);
-    setOtpSent(false);
-    setConfirmationResult(null);
-    setLastPhoneSent('');
     setError('');
   };
 
   const toggleAdminMode = () => {
     setIsAdminMode(!isAdminMode);
     setIsRegister(false);
-    setUseOtpMode(false);
-    setOtpSent(false);
-    setConfirmationResult(null);
-    setLastPhoneSent('');
     setError('');
   };
 
@@ -312,107 +185,43 @@ export default function LoginModal({ onClose }) {
           {/* Sign In Fields */}
           {!isRegister && (
             <div className="form-group">
-              <label className="form-label">
-                {isAdminMode 
-                  ? 'Admin Email Address' 
-                  : useOtpMode 
-                    ? 'Phone Number' 
-                    : 'Email Address or Phone Number'}
-              </label>
+              <label className="form-label">{isAdminMode ? 'Admin Email Address' : 'Email Address'}</label>
               <div className="input-with-icon">
-                {isAdminMode ? <Mail className="input-icon" size={16} /> : <Phone className="input-icon" size={16} />}
+                <Mail className="input-icon" size={16} />
                 <input
-                  type={isAdminMode ? 'email' : 'text'}
+                  type="email"
                   required
-                  placeholder={
-                    isAdminMode 
-                      ? 'admin@mahathitailors.com' 
-                      : useOtpMode 
-                        ? 'Enter your phone (e.g. 9876543210)' 
-                        : 'Enter your email or phone'
-                  }
-                  value={email || phone}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (isAdminMode) setEmail(val);
-                    else {
-                      setEmail(val);
-                      setPhone(val);
-                    }
-                  }}
+                  placeholder={isAdminMode ? 'admin@mahathitailors.com' : 'Enter your email'}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   className="form-input"
                 />
               </div>
             </div>
           )}
 
-          {/* Password (used in standard login & admin login) */}
-          {(!useOtpMode || isAdminMode) && (
-            <div className="form-group">
-              <label className="form-label">Password</label>
-              <div className="input-with-icon">
-                <Lock className="input-icon" size={16} />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="form-input"
-                />
-                <button
-                  type="button"
-                  className="password-toggle-btn"
-                  onClick={() => setShowPassword(!showPassword)}
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
+          {/* Password */}
+          <div className="form-group">
+            <label className="form-label">Password</label>
+            <div className="input-with-icon">
+              <Lock className="input-icon" size={16} />
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="form-input"
+              />
+              <button
+                type="button"
+                className="password-toggle-btn"
+                onClick={() => setShowPassword(!showPassword)}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
-          )}
-
-          {/* OTP Section (Registration or OTP-Login) */}
-          {(isRegister || (useOtpMode && !isAdminMode)) && (
-            <div className="otp-container-box">
-              {otpSent ? (
-                <div className="form-group">
-                  <label className="form-label text-gradient">Verification OTP Code</label>
-                  <div className="otp-sent-status text-center text-sm margin-bottom-xs">
-                    <span>OTP sent to <strong>{lastPhoneSent}</strong></span>
-                  </div>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Enter 6-digit OTP"
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value)}
-                    className="form-input text-center otp-input"
-                    maxLength={6}
-                  />
-                  
-                  <div className="otp-actions flex justify-between margin-top-xs">
-                    <button
-                      type="button"
-                      className="auth-toggle-link text-xs"
-                      onClick={handleSendOTP}
-                      disabled={loading || resendCooldown > 0}
-                    >
-                      {resendCooldown > 0 ? `Resend OTP in ${resendCooldown}s` : 'Resend OTP'}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-block send-otp-btn"
-                  onClick={handleSendOTP}
-                  disabled={loading}
-                >
-                  Send Verification OTP
-                </button>
-              )}
-            </div>
-          )}
+          </div>
 
           {/* Address Fields (Sign Up only) */}
           {isRegister && (
@@ -446,13 +255,10 @@ export default function LoginModal({ onClose }) {
             </div>
           )}
 
-          {/* Invisible reCAPTCHA container */}
-          <div id="recaptcha-container" className="margin-bottom-xs"></div>
-
           <button
             type="submit"
             className="btn btn-primary btn-block submit-auth-btn"
-            disabled={loading || (isRegister && !otpSent) || (useOtpMode && !otpSent)}
+            disabled={loading}
           >
             {loading ? 'Processing...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
@@ -465,15 +271,6 @@ export default function LoginModal({ onClose }) {
               {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button className="auth-toggle-link" onClick={toggleMode}>
                 {isRegister ? 'Sign In' : 'Sign Up Now'}
-              </button>
-            </p>
-          )}
-
-          {/* Toggle Login Option (OTP or Password) */}
-          {!isRegister && !isAdminMode && (
-            <p className="margin-top-sm">
-              <button className="auth-toggle-link" onClick={() => setUseOtpMode(!useOtpMode)}>
-                {useOtpMode ? 'Sign In with Password' : 'Sign In with OTP Verification'}
               </button>
             </p>
           )}

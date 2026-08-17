@@ -68,17 +68,18 @@ app.post('/api/auth/register', async (req, res) => {
 
   try {
     const decodedToken = await verifyFirebaseIdToken(firebaseToken);
-    if (!decodedToken || !decodedToken.phone_number) {
+    if (!decodedToken || !decodedToken.email) {
       return res.status(400).json({ message: 'Invalid Firebase authentication token' });
     }
 
-    const verifiedPhone = normalizePhone(decodedToken.phone_number);
-    const inputPhone = normalizePhone(phone);
+    const verifiedEmail = decodedToken.email.toLowerCase();
+    const inputEmail = email.trim().toLowerCase();
 
-    if (verifiedPhone !== inputPhone) {
-      return res.status(400).json({ message: 'Submitted phone number does not match verified Firebase phone number' });
+    if (verifiedEmail !== inputEmail) {
+      return res.status(400).json({ message: 'Submitted email address does not match verified Firebase email address' });
     }
 
+    const inputPhone = normalizePhone(phone);
     const password_hash = bcrypt.hashSync(password, 10);
     const profile_pic = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(/\s+/g, '')}`;
 
@@ -87,7 +88,7 @@ app.post('/api/auth/register', async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
     
-    db.run(query, [name, email, inputPhone, password_hash, address || '', city || '', pincode || '', profile_pic], function (err) {
+    db.run(query, [name, inputEmail, inputPhone, password_hash, address || '', city || '', pincode || '', profile_pic], function (err) {
       if (err) {
         if (err.message.includes('UNIQUE constraint failed')) {
           return res.status(400).json({ message: 'Email or phone number already registered' });
@@ -96,7 +97,7 @@ app.post('/api/auth/register', async (req, res) => {
       }
       
       const userId = this.lastID;
-      const user = { id: userId, name, email, phone: inputPhone };
+      const user = { id: userId, name, email: inputEmail, phone: inputPhone };
       const token = generateToken(user);
       
       // Initialize empty measurements profile
@@ -105,7 +106,7 @@ app.post('/api/auth/register', async (req, res) => {
       res.status(201).json({
         message: 'Registration successful',
         token,
-        user: { id: userId, name, email, phone: inputPhone, profile_pic }
+        user: { id: userId, name, email: inputEmail, phone: inputPhone, profile_pic }
       });
     });
   } catch (error) {
@@ -113,7 +114,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// User Login (supports password login or Firebase OTP token login)
+// User Login (supports password login or Firebase email/password token login)
 app.post('/api/auth/login', async (req, res) => {
   const { emailOrPhone, password, otp, firebaseToken } = req.body;
 
@@ -122,14 +123,14 @@ app.post('/api/auth/login', async (req, res) => {
 
     if (firebaseToken) {
       const decodedToken = await verifyFirebaseIdToken(firebaseToken);
-      if (!decodedToken || !decodedToken.phone_number) {
+      if (!decodedToken || !decodedToken.email) {
         return res.status(400).json({ message: 'Invalid Firebase authentication token' });
       }
 
-      const verifiedPhone = normalizePhone(decodedToken.phone_number);
-      user = await dbGet('SELECT * FROM users WHERE phone = ?', [verifiedPhone]);
+      const verifiedEmail = decodedToken.email.toLowerCase();
+      user = await dbGet('SELECT * FROM users WHERE LOWER(email) = ?', [verifiedEmail]);
       if (!user) {
-        return res.status(404).json({ message: 'No registered user found with this verified phone number. Please register first.' });
+        return res.status(404).json({ message: 'No registered user found with this verified email address. Please register first.' });
       }
     } else {
       if (!emailOrPhone) {
