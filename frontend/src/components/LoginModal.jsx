@@ -33,6 +33,8 @@ export default function LoginModal({ onClose }) {
   const [resendCooldown, setResendCooldown] = useState(0);
   const [lastPhoneSent, setLastPhoneSent] = useState('');
 
+  const recaptchaVerifierRef = React.useRef(null);
+
   const normalizePhone = (num) => {
     let cleaned = num.trim().replace(/[\s\-\(\)]/g, '');
     if (cleaned.length === 10 && /^\d+$/.test(cleaned)) {
@@ -51,6 +53,19 @@ export default function LoginModal({ onClose }) {
     }
     return () => clearTimeout(timer);
   }, [resendCooldown]);
+
+  React.useEffect(() => {
+    return () => {
+      if (recaptchaVerifierRef.current) {
+        try {
+          recaptchaVerifierRef.current.clear();
+        } catch (err) {
+          console.error('Error clearing recaptchaVerifier on unmount:', err);
+        }
+        recaptchaVerifierRef.current = null;
+      }
+    };
+  }, []);
 
   const handleSendOTP = async (e) => {
     if (e) e.preventDefault();
@@ -72,15 +87,22 @@ export default function LoginModal({ onClose }) {
     }
 
     try {
-      if (window.recaptchaVerifier) {
-        try {
-          window.recaptchaVerifier.clear();
-        } catch (err) {
-          console.error('Error clearing recaptchaVerifier:', err);
-        }
+      // Clear any previous HTML content inside container to prevent reCAPTCHA rendering conflict
+      const container = document.getElementById('recaptcha-container');
+      if (container) {
+        container.innerHTML = '';
       }
 
-      window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+      if (recaptchaVerifierRef.current) {
+        try {
+          recaptchaVerifierRef.current.clear();
+        } catch (err) {
+          console.error('Error clearing previous recaptchaVerifier:', err);
+        }
+        recaptchaVerifierRef.current = null;
+      }
+
+      recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'recaptcha-container', {
         size: 'invisible',
         callback: (response) => {
           // reCAPTCHA solved
@@ -90,7 +112,7 @@ export default function LoginModal({ onClose }) {
         }
       });
 
-      const confirmation = await signInWithPhoneNumber(auth, formattedPhone, window.recaptchaVerifier);
+      const confirmation = await signInWithPhoneNumber(auth, formattedPhone, recaptchaVerifierRef.current);
       setConfirmationResult(confirmation);
       setOtpSent(true);
       setLastPhoneSent(formattedPhone);
